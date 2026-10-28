@@ -9,7 +9,7 @@ Compile: gcc -O2 -Wall -Wextra -std=c17 -o calc calc.c -lm
 
 Resources: course assignment and C standard library documentation.
 
-AI tools used: OpenAI ChatGPT. I used ChatGPT to help understand
+AI tools used: https://chatgpt.com/c/6ae1b051-b060-83ed-810e-53e82305efba
 
 the requirements, plan the parser, and debug the implementation.
 */
@@ -119,7 +119,7 @@ if (p->pos < p->len && p->text[p->pos] == '.') {
     p->pos++;
     if (p->pos >= p->len ||
         !isdigit((unsigned char)p->text[p->pos])) {
-        set_error(p, p->pos);
+        set_error(p, p->pos + 1);
         return integer_value(0);
     }
 
@@ -174,13 +174,8 @@ if (p->pos + 1 < p->len &&
     }
 
     if (right.is_float) {
-        double result = pow(left.is_float ? left.d : (double)left.i,
-                            right.d);
-        if (!isfinite(result)) {
-            set_error(p, op_pos + 1);
-            return integer_value(0);
-        }
-        return float_value(result);
+        set_error(p, exponent_pos + 1);
+        return integer_value(0);
     }
 
     if (right.i < 0) {
