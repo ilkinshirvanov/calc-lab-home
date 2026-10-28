@@ -119,7 +119,7 @@ if (p->pos < p->len && p->text[p->pos] == '.') {
     p->pos++;
     if (p->pos >= p->len ||
         !isdigit((unsigned char)p->text[p->pos])) {
-        set_error(p, p->pos + 1);
+        set_error(p, p->pos);
         return integer_value(0);
     }
 
@@ -174,8 +174,13 @@ if (p->pos + 1 < p->len &&
     }
 
     if (right.is_float) {
-        set_error(p, exponent_pos + 1);
-        return integer_value(0);
+        double result = pow(left.is_float ? left.d : (double)left.i,
+                            right.d);
+        if (!isfinite(result)) {
+            set_error(p, op_pos + 1);
+            return integer_value(0);
+        }
+        return float_value(result);
     }
 
     if (right.i < 0) {
@@ -642,25 +647,121 @@ static int process_directory(const char *indir, const char *outdir)
     return failed;
 }
 
+
+static const char *path_basename(const char *path)
+{
+    const char *end = path + strlen(path);
+    while (end > path && end[-1] == '/')
+        end--;
+    const char *begin = end;
+    while (begin > path && begin[-1] != '/')
+        begin--;
+    size_t n = (size_t)(end - begin);
+    static char name[4096];
+    if (n >= sizeof name)
+        n = sizeof name - 1;
+    memcpy(name, begin, n);
+    name[n] = '\0';
+    return name;
+}
+
+static int process_one_file(const char *input_path, const char *outdir)
+{
+    FILE *in = fopen(input_path, "r");
+    if (!in) {
+        perror(input_path);
+        return 1;
+    }
+
+    if (!make_directory(outdir)) {
+        fprintf(stderr, "Cannot create output directory: %s\n", outdir);
+        fclose(in);
+        return 1;
+    }
+
+    const char *filename = path_basename(input_path);
+    size_t n = strlen(filename);
+    if (n < 4 || strcmp(filename + n - 4, ".txt") != 0) {
+        fprintf(stderr, "Input file must end in .txt: %s\n", input_path);
+        fclose(in);
+        return 1;
+    }
+
+    size_t base_len = n - 4;
+    size_t name_len = base_len + sizeof "_ilkin_shirvanov_251ADB133.txt";
+    char *outname = malloc(name_len);
+    if (!outname) {
+        fclose(in);
+        return 1;
+    }
+
+    snprintf(outname, name_len, "%.*s_ilkin_shirvanov_251ADB133.txt",
+             (int)base_len, filename);
+    char *outpath = join_path(outdir, outname);
+    free(outname);
+    if (!outpath) {
+        fclose(in);
+        return 1;
+    }
+
+    FILE *tmp = tmpfile();
+    if (!tmp) {
+        perror("tmpfile");
+        fclose(in);
+        free(outpath);
+        return 1;
+    }
+
+    (void)process_stream(in, tmp);
+    fclose(in);
+    rewind(tmp);
+
+    FILE *out = fopen(outpath, "w");
+    if (!out) {
+        perror(outpath);
+        fclose(tmp);
+        free(outpath);
+        return 1;
+    }
+
+    char buffer[4096];
+    size_t got;
+    int failed = 0;
+    while ((got = fread(buffer, 1, sizeof buffer, tmp)) > 0) {
+        if (fwrite(buffer, 1, got, out) != got) {
+            failed = 1;
+            break;
+        }
+    }
+    if (ferror(tmp))
+        failed = 1;
+    if (fclose(out) != 0)
+        failed = 1;
+
+    fclose(tmp);
+    free(outpath);
+    return failed;
+}
+
 int main(int argc, char **argv)
 {
     const char *input_path = NULL;
     const char *indir = NULL;
     const char *outdir = NULL;
-    FILE *input = stdin;
-    int i;
 
-    for (i = 1; i < argc; i++) {
+    for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             printf("Usage: calc [-d DIR | --dir DIR] [-o OUTDIR | --output-dir OUTDIR] [input.txt]\n");
             return 0;
-        } else if (strcmp(argv[i], "-d") == 0 || strcmp(argv[i], "--dir") == 0) {
+        } else if (strcmp(argv[i], "-d") == 0 ||
+                   strcmp(argv[i], "--dir") == 0) {
             if (++i >= argc || indir || input_path) {
                 fprintf(stderr, "Invalid or repeated directory option.\n");
                 return 1;
             }
             indir = argv[i];
-        } else if (strcmp(argv[i], "-o") == 0 || strcmp(argv[i], "--output-dir") == 0) {
+        } else if (strcmp(argv[i], "-o") == 0 ||
+                   strcmp(argv[i], "--output-dir") == 0) {
             if (++i >= argc || outdir) {
                 fprintf(stderr, "Invalid or repeated output directory option.\n");
                 return 1;
@@ -677,34 +778,44 @@ int main(int argc, char **argv)
         }
     }
 
+    if (indir && input_path) {
+        fprintf(stderr, "Cannot combine -d with an input file.\n");
+        return 1;
+    }
+
+    if (!indir && !input_path) {
+        fprintf(stderr, "Usage: calc [-d DIR] [-o OUTDIR] [input.txt]\n");
+        return 1;
+    }
+
+    char default_dir[8192];
+
     if (indir) {
-        if (input_path) {
-            fprintf(stderr, "Cannot combine -d with an input file.\n");
-            return 1;
-        }
         if (!outdir) {
-            outdir = "output";
+            const char *base = path_basename(indir);
+            if (snprintf(default_dir, sizeof default_dir,
+                         "%s_ilkin_251ADB133", base) >= (int)sizeof default_dir) {
+                fprintf(stderr, "Directory path too long.\n");
+                return 1;
+            }
+            outdir = default_dir;
         }
         return process_directory(indir, outdir);
     }
 
-    if (outdir) {
-        fprintf(stderr, "-o requires -d.\n");
-        return 1;
-    }
-
-    if (input_path) {
-        input = fopen(input_path, "r");
-        if (!input) {
-            perror(input_path);
+    if (!outdir) {
+        const char *base = path_basename(input_path);
+        size_t n = strlen(base);
+        if (n >= 4 && strcmp(base + n - 4, ".txt") == 0)
+            n -= 4;
+        if (snprintf(default_dir, sizeof default_dir,
+                     "%.*s_ilkin_251ADB133", (int)n, base)
+            >= (int)sizeof default_dir) {
+            fprintf(stderr, "Directory path too long.\n");
             return 1;
         }
+        outdir = default_dir;
     }
 
-    {
-        int result = process_stream(input, stdout);
-        if (input_path)
-            fclose(input);
-        return result;
-    }
+    return process_one_file(input_path, outdir);
 }
